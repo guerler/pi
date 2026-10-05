@@ -32,7 +32,7 @@ import { assignJson } from "./json.ts";
 import { endRun, LiveDoc, type LiveState, type ToolSlot } from "./live.ts";
 import { planSystemEntries, renderSections, replaySections } from "./prompt.ts";
 import { ensureProviderSessionId } from "./provider.ts";
-import { appendToolResult, harnessError, ToolTask, type ToolTaskResult } from "./tool.ts";
+import { appendToolResult, harnessError, ToolTask, type ToolTaskResult, unexecuted } from "./tool.ts";
 import type {
 	CompactionPolicy,
 	CompactionResult,
@@ -42,6 +42,7 @@ import type {
 	ModelRef,
 	PromptInput,
 	ToolControl,
+	ToolExecutionResult,
 	UserInput,
 } from "./types.ts";
 import { recordUsage } from "./usage.ts";
@@ -560,6 +561,12 @@ async function startToolRound(
 			(call) =>
 				offered.has(call.name) && tools.find((tool) => tool.name === call.name)?.executionMode === "sequential",
 		);
+	const unoffered = new Map<string, ToolExecutionResult>();
+	for (const call of calls) {
+		if (offered.has(call.name)) continue;
+		const error = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+		unoffered.set(call.id, await unexecuted(runtime, call, error, context));
+	}
 	await runtime.commit(async (tx): Promise<Next> => {
 		const live = await tx.doc(LiveDoc, conversationId);
 		const entry = await appendAssistant(tx, conversationId, message);
@@ -567,8 +574,8 @@ async function startToolRound(
 		const tools: TaskId<ToolTaskResult>[] = [];
 		const pending: string[] = [];
 		for (const call of calls) {
-			if (!offered.has(call.name)) {
-				const unavailable = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+			const unavailable = unoffered.get(call.id);
+			if (unavailable !== undefined) {
 				const result = await appendToolResult(tx, conversationId, call, unavailable, runtime.now());
 				slots.push({ callId: call.id, name: call.name, status: "done", entry: result.id });
 				continue;

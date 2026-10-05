@@ -9,6 +9,7 @@ import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, utf8ByteLength } from "../truncat
 import type {
 	ConversationId,
 	EntryId,
+	HookRunner,
 	JsonObject,
 	Task,
 	TaskId,
@@ -21,6 +22,7 @@ import { assignJson } from "./json.ts";
 import { clearProgress, finishSlot, LiveDoc, type ToolSlot, toolSlot } from "./live.ts";
 import { boundOutput, OutputBuffer, type OutputLimits, PROGRESS_BYTES_PER_SECOND, Progress } from "./output.ts";
 import type {
+	HookApi,
 	ToolControl,
 	ToolDiagnostic,
 	ToolExecutionApi,
@@ -56,12 +58,20 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 			const call = await readCall(runtime, task.input, context);
 			const tool = (await runtime.agent(context)).tools.find((each) => each.name === call.name);
 			if (tool === undefined) {
-				const error = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+				const error = await unexecuted(
+					runtime,
+					call,
+					harnessError("tool_unavailable", `Tool ${call.name} is not available`),
+					context,
+				);
 				return settle(runtime, call, COMPLETED, () => error, context);
 			}
 			const prepared = prepare(tool, call.arguments as JsonObject);
 			const checked = "error" in prepared ? prepared : validate(tool, call, prepared.args);
-			if ("error" in checked) return settle(runtime, call, COMPLETED, () => invalid(checked.error), context);
+			if ("error" in checked) {
+				const rejected = await unexecuted(runtime, call, invalid(checked.error), context);
+				return settle(runtime, call, COMPLETED, () => rejected, context);
+			}
 			let args = checked.args;
 			let block: string | undefined;
 			await runtime.hooks.each("beforeTool", async (hook) => {
@@ -76,7 +86,12 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 				}
 			});
 			if (block !== undefined) {
-				const blocked = harnessError("blocked", `Tool call blocked: ${block}`);
+				const blocked = await unexecuted(
+					runtime,
+					call,
+					harnessError("blocked", `Tool call blocked: ${block}`),
+					context,
+				);
 				return settle(runtime, call, COMPLETED, () => blocked, context);
 			}
 			const validated = validate(tool, call, args);
@@ -331,6 +346,20 @@ function publishProgress(runtime: Runtime, reported: Reported, context: Context)
 	);
 }
 
+/** The result of a call that never ran (unavailable, invalid, or blocked), with `afterTool` applied. */
+export async function unexecuted(
+	runtime: HookApi & { readonly hooks: HookRunner<object> },
+	call: ToolCall,
+	result: ToolExecutionResult,
+	context: Context,
+): Promise<ToolExecutionResult> {
+	let final = result;
+	await runtime.hooks.of(ToolTask).each("afterTool", async (hook) => {
+		final = (await hook(call, final, runtime, context)) ?? final;
+	});
+	return final;
+}
+
 /**
  * The settled result: the tool's result with the retained output and last details as fallbacks, its diagnostics after
  * those reported through the api, `afterTool` applied, and explicit text bounded, with the Harness's truncation
@@ -353,7 +382,7 @@ async function finalResult(
 		details: result.details === undefined ? reported.details : result.details,
 		diagnostics: [...reported.diagnostics, ...(result.diagnostics ?? [])],
 	};
-	await runtime.hooks.each("afterTool", async (hook) => {
+	await runtime.hooks.of(ToolTask).each("afterTool", async (hook) => {
 		final = (await hook(call, final, runtime, context)) ?? final;
 	});
 	// The retained output's truncation applies only while afterTool kept that content.

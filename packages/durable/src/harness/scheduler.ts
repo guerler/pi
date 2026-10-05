@@ -1056,9 +1056,9 @@ export class TaskScheduler {
 			}
 			return phase.agent;
 		};
-		const hooks: HookRunner<Record<string, unknown>> = {
+		const runner = (task: () => string): HookRunner<Record<string, unknown>> => ({
 			each: async (name, invoke) => {
-				for (const handlers of agentHooks(await agent(), phase.task().definition.name)) {
+				for (const handlers of agentHooks(await agent(), task())) {
 					const handler = (handlers as Record<string, unknown>)[name];
 					if (typeof handler !== "function") continue;
 					try {
@@ -1069,7 +1069,9 @@ export class TaskScheduler {
 					}
 				}
 			},
-		};
+			of: (other) => runner(() => other.definition.name) as never,
+		});
+		const hooks = runner(() => phase.task().definition.name);
 		const settings = this.#settings;
 		return {
 			taskId: invocation.taskId as TaskId<JsonValue>,

@@ -4,8 +4,10 @@ import type { Message, Models } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "./env/index.ts";
 import type {
 	Agent,
+	AnyTask,
 	ContextView,
 	ConversationHandle,
+	HooksOf,
 	RegistrySnapshot,
 	Settings,
 	SettledTask,
@@ -161,6 +163,8 @@ export interface HookRunner<H extends object> {
 	 * handler runs; once the invocation is signalled, the error propagates. Composition happens inside `invoke`.
 	 */
 	each<K extends keyof H>(name: K, invoke: (handler: NonNullable<H[K]>) => void | Promise<void>): Promise<void>;
+	/** The same runner over another task's handlers, for work this task does on that task's behalf. */
+	of<T extends AnyTask>(task: T): HookRunner<HooksOf<T> & object>;
 }
 
 /**
