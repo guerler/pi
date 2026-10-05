@@ -533,6 +533,36 @@ describe("tool results", () => {
 		await harness.close(context);
 	});
 
+	it("applies afterTool to calls that never ran: unoffered, invalid, and blocked", async () => {
+		const setup = chatSetup();
+		const ran: string[] = [];
+		addTool(
+			setup.registry,
+			tool("echo", async () => {
+				ran.push("echo");
+				return { content: [] };
+			}),
+		);
+		addHooks(setup.registry, ToolTask, {
+			beforeTool: (call) => (call.id === "block" ? { block: "not today" } : undefined),
+			afterTool: (call, result) => ({
+				...result,
+				content: [{ type: "text", text: `${call.name}/${call.id}: ${result.diagnostics?.[0]?.code}` }],
+			}),
+		});
+		const { harness, entries } = await run(setup, [
+			calls(["ghost", {}, "ghost"], ["echo", { text: { no: 1 } }, "invalid"], ["echo", {}, "block"]),
+			DONE,
+		]);
+		const byId = new Map(results(entries).map((result) => [result.toolCallId, [result.isError, resultText(result)]]));
+		const shown = (text: string, error: string) => [true, `${text}|<harness>\n[error] ${error}\n</harness>`];
+		expect(byId.get("ghost")).toEqual(shown("ghost/ghost: tool_unavailable", "Tool ghost is not available"));
+		expect(byId.get("block")).toEqual(shown("echo/block: blocked", "Tool call blocked: not today"));
+		expect(byId.get("invalid")![1]).toMatch(/^echo\/invalid: invalid_arguments\|.*Validation failed/s);
+		expect(ran).toEqual([]);
+		await harness.close(context);
+	});
+
 	it("runs the hooks of the selected extensions; a task-owned child copies its owner's selection", async () => {
 		const setup = chatSetup();
 		const calledIn: number[] = [];
