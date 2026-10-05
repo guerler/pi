@@ -397,7 +397,7 @@ const Guard = defineExtension({
 ```
 
 - **Generation:** `beforeRequest` (replace the messages of one request), `afterResponse`, `onYield` (continue the run with another user message), and `afterTools` (runs once a round's tools are done).
-- **Tools:** `beforeTool` (block or rewrite arguments) and `afterTool` (replace the result).
+- **Tools:** `beforeTool` (block or rewrite arguments) and `afterTool` (replace the result, including that of a call that never ran: unavailable, invalid, or blocked).
 
 To limit a hook to some conversations, select its extension only there, for example with `configure({ extensions: { add: [Guard] } })`.
 
