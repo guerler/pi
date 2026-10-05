@@ -603,6 +603,150 @@ describe("tool results", () => {
 		await harness.close(context);
 	});
 
+	it("applies afterTool to calls that never ran: unoffered, invalid, and blocked", async () => {
+		const setup = chatSetup();
+		const ran: string[] = [];
+		addTool(
+			setup.registry,
+			tool("echo", async () => {
+				ran.push("echo");
+				return { output: [] };
+			}),
+		);
+		addHooks(setup.registry, ToolTask, {
+			beforeTool: (call) => (call.id === "block" ? { block: "not today" } : undefined),
+			afterTool: (call, result) => ({
+				...result,
+				output: [{ type: "text", text: `${call.name}/${call.id}: ${result.diagnostics?.[0]?.code}` }],
+			}),
+		});
+		const { harness, entries } = await run(setup, [
+			calls(["ghost", {}, "ghost"], ["echo", { text: { no: 1 } }, "invalid"], ["echo", {}, "block"]),
+			DONE,
+		]);
+		const byId = new Map(results(entries).map((result) => [result.toolCallId, [result.isError, resultText(result)]]));
+		const shown = (text: string, error: string) => [true, `${text}|<harness>\n[error] ${error}\n</harness>`];
+		expect(byId.get("ghost")).toEqual(shown("ghost/ghost: tool_unavailable", "Tool ghost is not available"));
+		expect(byId.get("block")).toEqual(shown("echo/block: blocked", "Tool call blocked: not today"));
+		expect(byId.get("invalid")![1]).toMatch(/^echo\/invalid: invalid_arguments\|.*Validation failed/s);
+		expect(ran).toEqual([]);
+		await harness.close(context);
+	});
+
+	it("applies afterTool when beforeTool rewrites the arguments into invalid ones", async () => {
+		const setup = chatSetup();
+		const ran: string[] = [];
+		const after: (string | undefined)[] = [];
+		addTool(
+			setup.registry,
+			tool("echo", async () => {
+				ran.push("echo");
+				return { output: [] };
+			}),
+		);
+		addHooks(setup.registry, ToolTask, {
+			beforeTool: () => ({ arguments: { text: { no: 1 } } }),
+			afterTool: (_call, result) => {
+				after.push(result.diagnostics?.[0]?.code);
+				return undefined;
+			},
+		});
+		const { harness, entries } = await run(setup, [calls(["echo", { text: "hi" }, "c1"]), DONE]);
+		expect(after).toEqual(["invalid_arguments"]);
+		expect(ran).toEqual([]);
+		expect(results(entries)[0]).toMatchObject({ toolCallId: "c1", isError: true });
+		await harness.close(context);
+	});
+
+	it("gives each call to a tool not offered its own memo names, and applies no afterTool control for it", async () => {
+		const setup = chatSetup();
+		const seen: [string, string][] = [];
+		addHooks(setup.registry, ToolTask, {
+			afterTool: async (call, result, api, callContext) => {
+				seen.push([call.id, await api.memo("first", call.id, callContext)]);
+				return { ...result, control: { terminate: true } };
+			},
+		});
+		const { harness, status } = await run(setup, [calls(["ghost", {}, "g1"], ["ghost", {}, "g2"]), DONE]);
+		expect(seen).toEqual([
+			["g1", "g1"],
+			["g2", "g2"],
+		]);
+		// No task carries the control of a call not offered, so the run asks the model again.
+		expect(status).toBe("done");
+		expect(setup.faux.state.callCount).toBe(2);
+		await harness.close(context);
+	});
+
+	it("runs afterTool for a call not offered on a copy, leaving the committed answer as the model sent it", async () => {
+		const setup = chatSetup();
+		addHooks(setup.registry, ToolTask, {
+			afterTool: (call) => {
+				(call.arguments as Record<string, unknown>).injected = "yes";
+				return undefined;
+			},
+		});
+		const { harness, entries } = await run(setup, [calls(["ghost", { a: 1 }, "g1"]), DONE]);
+		const answer = entries.find((entry) => entry.kind === "pi.assistant")!;
+		expect(JSON.stringify(answer.model)).not.toContain("injected");
+		await harness.close(context);
+	});
+
+	it("applies an afterTool terminate to a blocked call", async () => {
+		const setup = chatSetup();
+		addTool(
+			setup.registry,
+			tool("echo", async () => ({ output: [] })),
+		);
+		addHooks(setup.registry, ToolTask, {
+			beforeTool: () => ({ block: "no" }),
+			afterTool: (_call, result) => ({ ...result, control: { terminate: true } }),
+		});
+		const { harness, status } = await run(setup, [calls(["echo", {}, "c1"]), DONE]);
+		expect(status).toBe("done");
+		expect(setup.faux.state.callCount).toBe(1);
+		await harness.close(context);
+	});
+
+	it("reports a throwing afterTool for a call not offered and keeps the next handler's result", async () => {
+		const setup = chatSetup();
+		addHooks(setup.registry, ToolTask, {
+			afterTool: () => {
+				throw new Error("hook failed");
+			},
+		});
+		addHooks(setup.registry, ToolTask, {
+			afterTool: (_call, result) => ({
+				...result,
+				output: [{ type: "text", text: "hint" }],
+				structuredOutput: "forged",
+			}),
+		});
+		const { harness, entries } = await run(setup, [calls(["ghost", {}, "g1"]), DONE]);
+		expect(setup.reports.map((error) => (error as Error).message)).toContain("hook failed");
+		expect(resultText(results(entries)[0]!)).toMatch(/^hint\|<harness>/);
+		await harness.close(context);
+	});
+
+	it("bounds the output afterTool gives a call that never ran", async () => {
+		const setup = chatSetup();
+		addTool(
+			setup.registry,
+			tool("echo", async () => ({ output: [] })),
+		);
+		addHooks(setup.registry, ToolTask, {
+			beforeTool: () => ({ block: "no" }),
+			afterTool: (_call, result) => ({ ...result, output: [{ type: "text", text: "x".repeat(200_000) }] }),
+		});
+		const { harness, entries } = await run(setup, [calls(["echo", {}, "c1"], ["ghost", {}, "c2"]), DONE]);
+		for (const entry of entries.filter((each) => ToolResultEntry.is(each))) {
+			expect(resultText(entry.model![0] as ToolResultMessage).length).toBeLessThan(60_000);
+			expect(entry.data?.diagnostics).toContainEqual(expect.objectContaining({ code: "truncated" }));
+		}
+		expect(results(entries)).toHaveLength(2);
+		await harness.close(context);
+	});
+
 	it("runs the hooks of the selected extensions; a task-owned child copies its owner's selection", async () => {
 		const setup = chatSetup();
 		const calledIn: number[] = [];

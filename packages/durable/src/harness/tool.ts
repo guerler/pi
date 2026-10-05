@@ -30,7 +30,7 @@ import type {
 	Tx,
 	TypedEntry,
 } from "../types.ts";
-import { toolExtension } from "./agent.ts";
+import { agentHooks, toolExtension } from "./agent.ts";
 import { assignJson } from "./json.ts";
 import {
 	clearProgress,
@@ -43,6 +43,7 @@ import {
 	toolSlot,
 } from "./live.ts";
 import type {
+	HookApi,
 	NestedToolExecutionResult,
 	ToolControl,
 	ToolDiagnostic,
@@ -136,13 +137,12 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 			const call = await readCall(runtime, task.input, context);
 			const tool = await resolveTool(runtime, task.input, call.name, context);
 			if (tool === undefined) {
-				const error = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
-				return settle(runtime, task.input, call, COMPLETED, () => error, context);
+				const unavailable = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+				return unexecuted(runtime, task.input, call, undefined, unavailable, context);
 			}
 			const prepared = prepare(tool, call.arguments as JsonObject);
 			const checked = "error" in prepared ? prepared : validate(tool, call, prepared.args);
-			if ("error" in checked)
-				return settle(runtime, task.input, call, COMPLETED, () => invalid(checked.error), context);
+			if ("error" in checked) return unexecuted(runtime, task.input, call, tool, invalid(checked.error), context);
 			let args = checked.args;
 			let block: string | undefined;
 			await runtime.hooks.each("beforeTool", async (hook) => {
@@ -158,11 +158,11 @@ export const ToolTask = defineTask<ToolTaskInput, ToolTaskCheckpoint, ToolTaskRe
 			});
 			if (block !== undefined) {
 				const blocked = harnessError("blocked", `Tool call blocked: ${block}`);
-				return settle(runtime, task.input, call, COMPLETED, () => blocked, context);
+				return unexecuted(runtime, task.input, call, tool, blocked, context);
 			}
 			const validated = validate(tool, call, args);
 			if ("error" in validated)
-				return settle(runtime, task.input, call, COMPLETED, () => invalid(validated.error), context);
+				return unexecuted(runtime, task.input, call, tool, invalid(validated.error), context);
 			// Strict JSON: repair may set optional properties to undefined, which the slot and checkpoint cannot hold.
 			const final = copyJson(validated.args, { omitUndefinedProperties: true }) as JsonObject;
 			await runtime.commit(async (tx) => {
@@ -269,6 +269,15 @@ function validate(tool: ToolRegistration, call: ToolCall, args: JsonObject): Che
 	}
 }
 
+/** The tool's output limits over the defaults; an unresolved tool gets the defaults. */
+function outputLimits(tool: ToolRegistration | undefined): OutputLimits {
+	return {
+		maxBytes: tool?.outputLimits?.maxBytes ?? DEFAULT_MAX_BYTES,
+		maxLines: tool?.outputLimits?.maxLines ?? DEFAULT_MAX_LINES,
+		retain: tool?.outputLimits?.retain ?? "head",
+	};
+}
+
 function invalid(message: string): ToolExecutionResult {
 	return harnessError("invalid_arguments", message);
 }
@@ -290,11 +299,7 @@ async function run(
 	args: JsonObject,
 	context: Context,
 ): Promise<void> {
-	const limits: OutputLimits = {
-		maxBytes: tool.outputLimits?.maxBytes ?? DEFAULT_MAX_BYTES,
-		maxLines: tool.outputLimits?.maxLines ?? DEFAULT_MAX_LINES,
-		retain: tool.outputLimits?.retain ?? "head",
-	};
+	const limits = outputLimits(tool);
 	const reported: Reported = { output: new OutputBuffer(limits), limits, diagnostics: [], details: undefined };
 	const streams = input.kind === "model" || input.progress !== false;
 	const progress = publishProgress(runtime, reported, streams, context);
@@ -529,6 +534,82 @@ function publishProgress(runtime: Runtime, reported: Reported, enabled: boolean,
 		runtime.settings.progress.outputIntervalMs,
 		progressClock(runtime),
 	);
+}
+
+/**
+ * Settle a call that never ran (unavailable, invalid arguments, or blocked) with the Harness's error result, after
+ * `afterTool`.
+ */
+async function unexecuted(
+	runtime: Runtime,
+	input: ToolTaskInput,
+	call: ToolHookCall,
+	tool: ToolRegistration | undefined,
+	result: ToolExecutionResult,
+	context: Context,
+): Promise<void> {
+	let final = result;
+	await runtime.hooks.each("afterTool", async (hook) => {
+		final = (await hook(call, final, runtime, context)) ?? final;
+	});
+	const settled = neverRan(final, tool);
+	await settle(runtime, input, call, COMPLETED, () => settled, context);
+}
+
+/**
+ * What a generation needs to run `afterTool` for a call its request did not offer: the hook api, the agent whose
+ * `pi.tool` hooks run, and how to report a handler's failure.
+ */
+export type UnofferedHost = Pick<HookApi, "taskId"> &
+	Pick<Runtime, "conversationId" | "models" | "snapshot" | "snapshotAsOf" | "memo" | "agent" | "signal" | "report">;
+
+/** The `tool_unavailable` result of a call its request did not offer, after `afterTool` (spec §7.3). */
+export async function unofferedResult(
+	runtime: UnofferedHost,
+	call: ToolCall,
+	context: Context,
+): Promise<ToolExecutionResult> {
+	const memo = runtime.memo as (name: string, ...rest: unknown[]) => Promise<JsonValue | undefined>;
+	const api: HookApi = {
+		taskId: runtime.taskId,
+		conversationId: runtime.conversationId,
+		get models() {
+			return runtime.models;
+		},
+		snapshot: runtime.snapshot,
+		snapshotAsOf: runtime.snapshotAsOf,
+		memo: ((name: string, ...rest: unknown[]) =>
+			memo(`pi.tool.unoffered:${call.id}:${name}`, ...rest)) as HookApi["memo"],
+	};
+	// The hooks get their own copy: the call is still part of the answer the round commits.
+	const hookCall = copyJson(call as unknown as JsonValue, { omitUndefinedProperties: true }) as unknown as ToolCall;
+	let final = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+	for (const { extension, handlers } of agentHooks(await runtime.agent(context), ToolTask.definition.name)) {
+		const afterTool = (handlers as Partial<ToolHooks>).afterTool;
+		if (typeof afterTool === "function") {
+			try {
+				final = (await afterTool.call(handlers, hookCall, final, api, context)) ?? final;
+			} catch (error) {
+				if (runtime.signal.aborted) throw error;
+				runtime.report(error, { type: "extension", extension });
+			}
+		}
+	}
+	const { control: _control, ...settled } = neverRan(final, undefined);
+	return settled;
+}
+
+/**
+ * A result the Harness writes for a call that never ran, as `afterTool` left it: its output bounded as an executed
+ * call's is, and without `structuredOutput`, which such a result never has.
+ */
+function neverRan(result: ToolExecutionResult, tool: ToolRegistration | undefined): ToolExecutionResult {
+	const { structuredOutput: _structuredOutput, ...rest } = result;
+	const limits = outputLimits(tool);
+	const bounded = boundContent(rest.output ?? [], limits);
+	const diagnostics = [...(rest.diagnostics ?? [])];
+	if (bounded.droppedBytes > 0) diagnostics.push(truncated(bounded, limits.retain));
+	return { ...rest, output: bounded.content, diagnostics };
 }
 
 /**

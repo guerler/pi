@@ -275,6 +275,28 @@ describe("nested tool calls", () => {
 		await harness.close(context);
 	});
 
+	it("gives programs no structuredOutput for a nested call that never ran, whatever afterTool returns", async () => {
+		const setup = chatSetup();
+		addTool(setup.registry, echoTool().registration);
+		addHooks(setup.registry, ToolTask, {
+			beforeTool: (hookCall) => (hookCall.parent === undefined ? undefined : { block: "no" }),
+			afterTool: (hookCall, result) =>
+				hookCall.parent === undefined ? undefined : { ...result, structuredOutput: "forged" },
+		});
+		const nested: NestedToolExecutionResult[] = [];
+		addTool(
+			setup.registry,
+			tool("batch", async (_args, api, callContext) => {
+				nested.push(await api.executeTool("echo", { text: "hi" }, callContext));
+				return {};
+			}),
+		);
+		const { harness } = await runOnce(setup, [call("batch"), DONE]);
+		expect(nested[0]).toMatchObject({ isError: true, diagnostics: [{ code: "blocked" }] });
+		expect(nested[0]).not.toHaveProperty("structuredOutput");
+		await harness.close(context);
+	});
+
 	it("returns an error result for an unavailable tool and invalid arguments", async () => {
 		const setup = chatSetup();
 		addTool(setup.registry, echoTool().registration);

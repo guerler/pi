@@ -877,7 +877,10 @@ export interface ToolHooks {
 		api: HookApi,
 		context: Context,
 	): HookResult<{ readonly arguments?: JsonObject; readonly block?: string }>;
-	/** After execution, before the result is committed; replaces the result. */
+	/**
+	 * After execution, before the result is committed; replaces the result. Also runs for a call that never executed
+	 * (not offered, unavailable, invalid arguments, or blocked; spec §7.3, §8.4).
+	 */
 	afterTool(
 		call: ToolHookCall,
 		result: ToolExecutionResult,
