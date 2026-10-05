@@ -33,7 +33,7 @@ import { assignJson } from "./json.ts";
 import { endRun, LiveDoc, type LiveState, type ToolSlot } from "./live.ts";
 import { planSystemEntries, renderSections, replaySections } from "./prompt.ts";
 import { ensureProviderSessionId } from "./provider.ts";
-import { appendToolResult, harnessError, ToolTask, type ToolTaskResult } from "./tool.ts";
+import { appendToolResult, harnessError, ToolTask, type ToolTaskResult, unofferedResult } from "./tool.ts";
 import type {
 	CompactionPolicy,
 	CompactionResult,
@@ -43,6 +43,7 @@ import type {
 	ModelRef,
 	PromptInput,
 	ToolControl,
+	ToolExecutionResult,
 	UserInput,
 } from "./types.ts";
 import { recordUsage } from "./usage.ts";
@@ -568,8 +569,9 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 
 /**
  * Append the tool-calling answer and start its tool round in one commit (spec §8.3). A call to a tool the request did
- * not offer gets its `tool_unavailable` result here; every other call gets a tool task owned by the generation, only the
- * first one now when the round is sequential. The generation then waits for them in its `tools` phase, keeping the run.
+ * not offer gets its `tool_unavailable` result here, after `afterTool`; every other call gets a tool task owned by the
+ * generation, only the first one now when the round is sequential. The generation then waits for them in its `tools`
+ * phase, keeping the run.
  */
 async function startToolRound(
 	runtime: Runtime,
@@ -590,6 +592,10 @@ async function startToolRound(
 			(call) =>
 				offered.has(call.name) && tools.find((tool) => tool.name === call.name)?.executionMode === "sequential",
 		);
+	const unoffered = new Map<string, ToolExecutionResult>();
+	for (const call of calls) {
+		if (!offered.has(call.name)) unoffered.set(call.id, await unofferedResult(runtime, call, context));
+	}
 	await runtime.commit(async (tx): Promise<Next> => {
 		const live = await tx.doc(LiveDoc, conversationId);
 		const entry = await appendAssistant(tx, conversationId, message);
@@ -598,7 +604,7 @@ async function startToolRound(
 		const pending: string[] = [];
 		for (const call of calls) {
 			if (!offered.has(call.name)) {
-				const unavailable = harnessError("tool_unavailable", `Tool ${call.name} is not available`);
+				const unavailable = unoffered.get(call.id)!;
 				const result = await appendToolResult(tx, conversationId, call, unavailable, { timestamp: runtime.now() });
 				slots.push({ callId: call.id, name: call.name, status: "done", entry: result.id });
 				continue;

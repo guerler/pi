@@ -2740,7 +2740,10 @@ interface ToolHooks {
     api: HookApi,
     context: Context,
   ): HookResult<{ readonly arguments?: JsonObject; readonly block?: string }>;
-  /** After execution, before the result is committed; replaces the result. */
+  /**
+   * After execution, before the result is committed; replaces the result. Also runs for a call that never executed
+   * (not offered, unavailable, invalid arguments, or blocked; sections 7.3, 8.4).
+   */
   afterTool(
     call: ToolHookCall,
     result: ToolExecutionResult,
@@ -3213,8 +3216,12 @@ A tool call is accepted only if its request offered the tool. Generation checks
 this against the tool set replayed from the committed model context through the
 request's `cutoff`; `beforeRequest` replacements do not change it. It answers a
 call to a tool it did not offer with the `tool_unavailable` result described in
-section 2.2, without a tool task. An agent change after preparation does not
-affect this check (section 2.2). The tool task resolves the called name among
+section 2.2, without a tool task, after the `afterTool` chain of the `pi.tool`
+hooks, which runs before the tool-calling answer is committed: each call's
+hook api has its own `memo` names and the generation's `taskId`, and its
+result is bounded with the default output limits, without
+`structuredOutput` or `control`, which no task applies. An agent change after
+preparation does not affect this check (section 2.2). The tool task resolves the called name among
 the `tools` of the phase's agent resolution, the tools filter applied. It uses
 that implementation
 until execution settles: one phase handler resolves, validates, runs
@@ -4057,7 +4064,8 @@ A tool round starts in the commit that appends the tool-calling answer:
 1. The offered tools are replayed with pi-ai `getCurrentTools()` from the
    committed model context through `cutoff`: `request` already holds it, and
    `poll` derives it again. A call to a tool not offered gets its
-   `tool_unavailable` result entry here, without a task.
+   `tool_unavailable` result entry here, without a task, after `afterTool`
+   (section 7.3).
 2. Every other call gets a `pi.tool` task owned by the generation, with input
    `{ assistant, callId }`. The round is sequential when the settings'
    `toolExecution`, read as the round starts, is `sequential` or any called
@@ -4110,8 +4118,11 @@ Below, `{ entryId }` is a model-issued call's result.
   final arguments and the tool's replay policy and sets the slot `running`. The
   same handler executes the tool, runs the `afterTool` chain, and commits the
   result; it builds `api.env` with `HarnessOptions.env` right before executing
-  (section 2.2). A tool that does not resolve, invalid arguments, or a block
-  commits the corresponding error result instead, without intent.
+  (section 2.2). A tool that does not resolve, invalid arguments before or after
+  `beforeTool`, or a block runs the `afterTool` chain on the corresponding error
+  result and commits it instead, without intent, bounded like an executed call's
+  output and without `structuredOutput`; a `control` the chain returns applies
+  as an executed call's does.
 - `execute` is reached only by recovery. When both the stored and the current
   policy, resolved as in `call`, are `safe`, it executes again with the stored arguments,
   without `beforeTool`, and settles like `call`. Otherwise it commits an
