@@ -5,6 +5,7 @@
 ### Added
 
 - `settings.compaction.modelOverrides` sets compaction thresholds per model, keyed by exact `"provider/modelId"`, so one harness can serve small- and large-window models; the threshold check, overflow recovery, and the compaction task use the entry of the model they act for ([#10942](https://github.com/earendil-works/pi/issues/10942)).
+- `SyncSqliteDatabase` in `@earendil-works/pi-durable/storage/sqlite`: the `SqliteDatabase` facade over any synchronous SQLite connection (`exec`, `prepare`, `close`), with the queueing and transaction rules `NodeSqliteDatabase` already applied. It keeps the portable entry runtime-neutral, so `bun:sqlite` or SQLite's WebAssembly build in a browser worker (OPFS) need no adapter of their own. `NodeSqliteDatabase` now extends it, unchanged in behavior.
 
 ### Changed
 
