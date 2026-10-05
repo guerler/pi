@@ -6,3 +6,4 @@ export {
 	type SqliteMigration,
 } from "./migrations.ts";
 export { SqliteStorage } from "./storage.ts";
+export { type SyncSqliteConnection, SyncSqliteDatabase, type SyncSqliteStatement } from "./sync.ts";
