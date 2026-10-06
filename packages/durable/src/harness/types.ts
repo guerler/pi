@@ -59,6 +59,8 @@ export type SubmissionDraft = {
 			readonly type: "input";
 			readonly content: UserInput;
 			readonly whenBusy?: "steer" | "followUp" | "reject";
+			/** `queue`: an idle conversation queues it too, so it waits for the run the next input starts. */
+			readonly whenIdle?: "start" | "queue";
 			readonly entry?: never;
 	  }
 	| {
@@ -66,6 +68,7 @@ export type SubmissionDraft = {
 			readonly entry: EntryDraft;
 			readonly content?: never;
 			readonly whenBusy?: never;
+			readonly whenIdle?: never;
 	  }
 );
 
@@ -108,6 +111,8 @@ export type ConversationAbortOptions = {
 	 * conversation is ordinarily idle. Background work created afterwards is neither marked nor awaited.
 	 */
 	readonly background?: boolean;
+	/** Leave queued inputs in the inbox, where the next input places them, instead of withdrawing them. */
+	readonly keepQueued?: boolean;
 };
 
 /** Hook handler map declared by a task definition. */
@@ -419,6 +424,14 @@ export type HarnessSettings = {
 	readonly toolExecution?: ToolExecutionMode;
 	readonly steeringMode?: QueueMode;
 	readonly followUpMode?: QueueMode;
+	/** The most model turns one run takes; past them its inputs settle `unanswered` with `turn_limit`. */
+	readonly maxTurns?: number;
+	/**
+	 * `lead`: a request starts with the context's first system message. Preparation appends the prompt after the input
+	 * that started the run, so a provider taking system messages in place otherwise reads it as an update to a prompt it
+	 * never saw. Default `positional`.
+	 */
+	readonly promptPlacement?: "positional" | "lead";
 };
 
 /** Resolved settings: every field over its built-in default, object fields merged. */
@@ -432,6 +445,8 @@ export type Settings = {
 	readonly toolExecution: ToolExecutionMode;
 	readonly steeringMode: QueueMode;
 	readonly followUpMode: QueueMode;
+	readonly maxTurns?: number;
+	readonly promptPlacement: "positional" | "lead";
 };
 
 /** What `HarnessOptions.env` builds an environment for. */
@@ -502,6 +517,16 @@ export type ContextView = {
 	readonly messages: readonly Message[];
 };
 
+/** An exported entry: a head marker names the entry the active context starts at by its position in the export. */
+export type ExportedEntry = Omit<EntryDraft, "head"> & { readonly head?: "self" | { readonly entry: number } };
+
+/**
+ * A conversation's history as entries to append elsewhere, oldest first, so importing it leaves the same transcript and
+ * derives the same active context, compactions included. System entries and context edits are left out; the importing
+ * Harness derives its own prompt and tools.
+ */
+export type ConversationExport = { readonly entries: readonly ExportedEntry[] };
+
 /** Stateless handle for one conversation, bound to the Harness that returned it. Compare handles by `id`. */
 export interface Conversation {
 	readonly id: ConversationId;
@@ -530,6 +555,8 @@ export interface Conversation {
 	/** Session commit whose `tx.createTask()` defaults to this conversation. */
 	commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T>;
 	context(context: Context): Promise<ContextView>;
+	/** The whole history, for `Harness.importConversation()`. */
+	export(context: Context): Promise<ConversationExport>;
 	/** Newest-first fork-aware history of this conversation. */
 	entries(
 		query: Omit<EntryQuery, "conversationId">,
@@ -572,6 +599,12 @@ export interface Harness extends Session {
 	): Promise<Conversation>;
 	conversation(id: ConversationId, context: Context): Promise<Conversation | undefined>;
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation>;
+	/** A new conversation holding an exported history, created with `options` in one commit. */
+	importConversation(
+		exported: ConversationExport,
+		options: ConversationCreateOptions,
+		context: Context,
+	): Promise<Conversation>;
 
 	getTask<R>(id: TaskId<R>, context: Context): Promise<TaskRecord<JsonValue, JsonValue, R> | undefined>;
 	/** Live tasks and unsettled submissions. Writes nothing and runs no task code. */

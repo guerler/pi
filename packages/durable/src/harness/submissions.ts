@@ -141,8 +141,8 @@ function isSettled(record: SubmissionRecord): record is SettledSubmissionRecord 
 /**
  * Admit a submission inside a commit (spec §6); `Conversation.submit()` and conversation-owned compactions share it. A
  * known request ID returns its existing submission without writing. A busy conversation queues it in `pi.inbox`, or
- * rejects `whenBusy: "reject"` input with `ConversationBusy`. An idle conversation with queued items queues it behind
- * them and runs a final boundary. Otherwise idle input places a user entry and starts a run, and an idle write appends
+ * rejects `whenBusy: "reject"` input with `ConversationBusy`; `whenIdle: "queue"` input is queued even when idle. An
+ * idle conversation with queued items queues it behind them and runs a final boundary. Otherwise idle input places a user entry and starts a run, and an idle write appends
  * its entry and settles `done`, or `stale` when its head reaches before the active range.
  */
 export async function admitSubmission(
@@ -165,8 +165,9 @@ export async function admitSubmission(
 	const busy = live.run !== undefined;
 	if (busy && draft.type === "input" && draft.whenBusy === "reject") throw new ConversationBusy(conversationId);
 	const requestId = draft.requestId === undefined ? {} : { requestId: draft.requestId };
-	// A boundary reads the table, so it is prepared before the first table write; a busy one needs none.
-	const boundary = busy ? undefined : await prepareBoundary(tx, conversationId, queueModes);
+	const deferred = draft.type === "input" && draft.whenIdle === "queue";
+	// A boundary reads the table, so it is prepared before the first table write; a busy or deferred one needs none.
+	const boundary = busy || deferred ? undefined : await prepareBoundary(tx, conversationId, queueModes);
 	if (boundary === undefined || boundary.inbox.items.length > 0) {
 		const { id } = await tx.createSubmission({
 			conversationId,

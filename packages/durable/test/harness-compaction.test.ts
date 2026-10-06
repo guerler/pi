@@ -2297,3 +2297,29 @@ describe("context contributions", () => {
 		await chat.harness.close(context);
 	});
 });
+
+describe("export across a compaction", () => {
+	it("carries the whole history, and the copy derives the same compacted context", async () => {
+		const chat = await open();
+		await history(chat);
+		chat.faux.summaries.push(summary());
+		expect((await result(chat, await chat.root.compact(undefined, context))).status).toBe("completed");
+		const exported = await chat.root.export(context);
+		const before = await chat.root.context(context);
+		const kinds = exported.entries.map((entry) => entry.kind);
+		expect(kinds).toContain("pi.compaction");
+		// Entries from before the summary travel too, so a copy can still show them.
+		expect(kinds.indexOf("pi.user")).toBeLessThan(kinds.indexOf("pi.compaction"));
+		const { model } = await chat.root.agent(context);
+		const copy = await chat.harness.importConversation(
+			exported,
+			{ ownership: { kind: "ownerless" }, agent: { model } },
+			context,
+		);
+		const after = await copy.context(context);
+		const text = (view: typeof before) => view.messages.map((m) => `${m.role}:${JSON.stringify(m.content)}`);
+		expect(text(after)).toEqual(text(before).filter((line) => !line.startsWith("system:")));
+		expect((await allEntries(copy)).filter((e) => e.kind !== "pi.system").length).toBe(exported.entries.length);
+		await chat.harness.close(context);
+	});
+});

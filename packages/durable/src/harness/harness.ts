@@ -1,6 +1,6 @@
 import type { AttachedReplicatedState, Context, JsonValue } from "@earendil-works/chord";
 import { withAbortSignal, withoutAbortSignal } from "@earendil-works/chord/context";
-import { ResetEntry } from "../entries.ts";
+import { ResetEntry, SystemEntry } from "../entries.ts";
 import type { ExecutionEnv } from "../env/index.ts";
 import { SessionImpl } from "../session/session.ts";
 import type { Transaction } from "../session/transaction.ts";
@@ -38,6 +38,7 @@ import type {
 	Conversation,
 	ConversationAbortOptions,
 	ConversationCreateOptions,
+	ConversationExport,
 	ConversationHandle,
 	ConversationInit,
 	ConversationWatch,
@@ -124,6 +125,29 @@ class ConversationImpl<Tool extends ToolRegistration> implements Conversation {
 		return readContext(this.#host.harness, this.#host.storage, this.id, context);
 	}
 
+	async export(context: Context): Promise<ConversationExport> {
+		const history: EntryRecord[] = [];
+		let cursor: Cursor | undefined;
+		do {
+			const page = await this.entries({}, 500, cursor, context);
+			history.push(...page.items);
+			cursor = page.next;
+		} while (cursor !== undefined);
+		const kept = history.filter((entry) => !SystemEntry.is(entry)).sort((a, b) => a.id - b.id);
+		// A head names the entry the context starts at, or the first exported one after it when that is a system entry.
+		const at = (id: EntryId) => kept.findIndex((entry) => entry.id >= id);
+		return {
+			entries: kept.map((entry) => ({
+				kind: entry.kind,
+				...(entry.model === undefined ? {} : { model: entry.model }),
+				...(entry.data === undefined ? {} : { data: entry.data }),
+				...(entry.head === undefined
+					? {}
+					: { head: entry.head === entry.id ? ("self" as const) : { entry: at(entry.head) } }),
+			})),
+		};
+	}
+
 	entries(
 		query: Omit<EntryQuery, "conversationId">,
 		limit: number,
@@ -144,7 +168,7 @@ class ConversationImpl<Tool extends ToolRegistration> implements Conversation {
 
 	abort(context: Context, options?: ConversationAbortOptions): Promise<void> {
 		this.#host.tasks.resume();
-		return this.#host.tasks.abortConversation(this.id, options?.background === true, context);
+		return this.#host.tasks.abortConversation(this.id, options ?? {}, context);
 	}
 
 	waitForIdle(context: Context): Promise<void> {
@@ -319,6 +343,22 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 		return this.#create({ kind: "independent", ownership: options.ownership }, options, context);
 	}
 
+	importConversation(
+		exported: ConversationExport,
+		options: ConversationCreateOptions,
+		context: Context,
+	): Promise<Conversation> {
+		const init = async (tx: Tx, id: ConversationId): Promise<void> => {
+			const ids: EntryId[] = [];
+			for (const { head, ...entry } of exported.entries) {
+				const placed = head === undefined ? {} : { head: head === "self" ? ("self" as const) : ids[head.entry] };
+				ids.push((await tx.appendEntry(id, { ...entry, ...placed })).id);
+			}
+			await options.init?.(tx, id);
+		};
+		return this.#create({ kind: "independent", ownership: options.ownership }, { ...options, init }, context);
+	}
+
 	override close(context: Context): Promise<void> {
 		this.#closed = true;
 		return super.close(context);
@@ -398,7 +438,7 @@ function boundConversation(
 		},
 		abort: async (context, options) => {
 			binding.check();
-			return tasks.abortConversation(id, options?.background === true, bind(context));
+			return tasks.abortConversation(id, options ?? {}, bind(context));
 		},
 		waitForIdle: bound((callContext) => tasks.waitForIdle(id, callContext)),
 	};
