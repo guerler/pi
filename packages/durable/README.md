@@ -231,6 +231,8 @@ const harness = await Harness.open(storage, {
 }, context);
 ```
 
+`maxTurns` bounds the model turns of one run: past it, the run ends after its tool round and its inputs settle `unanswered` with reason `turn_limit`. `promptPlacement: "lead"` starts every request with the context's first system message; by default system entries reach the provider where they sit, after the input that started the run.
+
 ## Environment
 
 `env` builds the execution environment for each tool call, section rendering, and `runtime.env()`. It receives the conversation's ID, its agent `cwd`, and committed reads, so one function serves a directory per conversation or a container per conversation:
@@ -316,6 +318,7 @@ await root.submit({ type: "write", entry: { kind: "app.note", data: "user opened
 - **Steers** are placed after the current tool round and join the running work.
 - **Follow-ups** are placed when the run answers, and start the next run.
 - **Writes** append an entry without asking the model anything.
+- `whenIdle: "queue"` queues input even on an idle conversation; it waits for the run the next input starts.
 - `await submission.abort(context)` withdraws a queued submission.
 - The [settings](#settings) `steeringMode: "all"` and `followUpMode: "all"` place every queued item at once instead of one per turn.
 
@@ -408,11 +411,11 @@ const other = await harness.createConversation({ ownership: { kind: "ownerless" 
 const fork = await root.fork(entryId, { ownership: { kind: "ownerless" } }, context);
 ```
 
-A fork sees its parent's entries up to `entryId` and continues independently. It keeps the parent's agent as of that entry but receives a fresh provider session identity. Both take `agent` and `init`, applied in the creating commit.
+A fork sees its parent's entries up to `entryId` and continues independently. `conversation.export()` returns the active context as entry drafts, without system entries, and `harness.importConversation(exported, options)` creates a conversation holding them, so a host can store a conversation elsewhere and open it again under its own prompt and tools. It keeps the parent's agent as of that entry but receives a fresh provider session identity. Both take `agent` and `init`, applied in the creating commit.
 
 ## Abort and Subagents
 
-`await root.abort(context)` stops a conversation: queued inputs are withdrawn (queued writes stay), every task of its current work is aborted, and the call resolves once the conversation is idle.
+`await root.abort(context)` stops a conversation: queued inputs are withdrawn (queued writes stay), every task of its current work is aborted, and the call resolves once the conversation is idle. With `{ keepQueued: true }` queued inputs stay in the inbox for the next input to place.
 
 A conversation can be **owned** by a task. A subagent tool creates its child inside `api.commit()` with `ownership: { kind: "task", taskId: api.taskId }`, then drives it through `api.conversation(id)`:
 

@@ -56,6 +56,7 @@ export type {
 	Conversation,
 	ConversationAbortOptions,
 	ConversationCreateOptions,
+	ConversationExport,
 	ConversationHandle,
 	ConversationInit,
 	ConversationRetryPolicy,

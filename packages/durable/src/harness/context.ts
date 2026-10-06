@@ -161,3 +161,10 @@ function missingResult(call: ToolCall, timestamp: number): ToolResultMessage {
 		timestamp,
 	};
 }
+
+/** `messages` with their first system message moved to the front; later system messages stay in place. */
+export function leadWithSystem(messages: readonly Message[]): readonly Message[] {
+	const first = messages.findIndex((message) => message.role === "system");
+	if (first <= 0) return messages;
+	return [messages[first]!, ...messages.slice(0, first), ...messages.slice(first + 1)];
+}

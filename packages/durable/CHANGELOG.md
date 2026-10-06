@@ -4,6 +4,10 @@
 
 ### Added
 
+- `whenIdle: "queue"` input waits in the inbox on an idle conversation until the next input starts a run, and `Conversation.abort(context, { keepQueued: true })` leaves queued inputs for the next input to place, so a host can hold work back across a Stop.
+- `HarnessSettings.maxTurns` ends a run after that many model turns; its inputs settle `unanswered` with `turn_limit`.
+- `HarnessSettings.promptPlacement: "lead"` starts each request with the context's first system message, which preparation appends after the input that started the run.
+- `Conversation.export()` and `Harness.importConversation()` move a conversation's active context, without its system entries, into a new conversation.
 - `afterTool` hooks also see the result of a call that never executed (an unavailable tool, invalid arguments, or a `beforeTool` block), so an extension can redact, explain, or hint at every result the model reads.
 - `HookRunner.of(task)`: a task runs another task's hooks for work it does on that task's behalf; the generation applies the tool task's `afterTool` to calls its request did not offer.
 - `SyncSqliteDatabase` in `@earendil-works/pi-durable/storage/sqlite`: the `SqliteDatabase` facade over any synchronous SQLite connection (`exec`, `prepare`, `close`), with the queueing and transaction rules `NodeSqliteDatabase` already applied. It keeps the portable entry runtime-neutral, so `bun:sqlite` or SQLite's WebAssembly build in a browser worker (OPFS) need no adapter of their own. `NodeSqliteDatabase` now extends it, unchanged in behavior.

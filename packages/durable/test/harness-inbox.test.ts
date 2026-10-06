@@ -428,6 +428,47 @@ describe("inbox", () => {
 		await harness.close(context);
 	});
 
+	it("queues whenIdle queue input on an idle conversation until the next input starts a run", async () => {
+		const setup = chatSetup();
+		setup.faux.setResponses([answer("for q"), answer("for u")]);
+		const { harness, root } = await openChat(new MemoryStorage(), setup);
+		const queued = await root.submit({ type: "input", content: "q", whenIdle: "queue" }, context);
+		await harness.waitForIdle(context);
+		expect((await status(queued)).status).toBe("queued");
+		expect(transcript(await allEntries(root))).toEqual([]);
+
+		const input = await root.submit({ type: "input", content: "u" }, context);
+		await input.wait(context);
+		expect(await status(queued)).toMatchObject({ status: "done" });
+		expect(transcript(await allEntries(root))).toEqual([
+			"pi.user:q",
+			"pi.assistant:for q",
+			"pi.user:u",
+			"pi.assistant:for u",
+		]);
+		await harness.close(context);
+	});
+
+	it("keeps queued inputs through an abort with keepQueued, for the next input to place", async () => {
+		const setup = chatSetup();
+		const first = gated(answer("never"));
+		setup.faux.setResponses([first.step, answer("both")]);
+		setup.settings.followUpMode = "all";
+		const { harness, root } = await openChat(new MemoryStorage(), setup);
+		await root.submit({ type: "input", content: "a" }, context);
+		await first.reached;
+		const kept = await root.submit({ type: "input", content: "f" }, context);
+		await root.abort(context, { keepQueued: true });
+		expect((await status(kept)).status).toBe("queued");
+		expect(await inbox(harness, root)).toEqual([[kept.id, "followUp"]]);
+
+		const input = await root.submit({ type: "input", content: "u" }, context);
+		await input.wait(context);
+		expect(await status(kept)).toMatchObject({ status: "done" });
+		expect(transcript(await allEntries(root)).slice(-3)).toEqual(["pi.user:f", "pi.user:u", "pi.assistant:both"]);
+		await harness.close(context);
+	});
+
 	it("keeps queued submissions across reopen and settles them afterwards", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "pi-durable-inbox-"));
 		directories.add(directory);

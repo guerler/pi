@@ -1,6 +1,6 @@
 import type { AttachedReplicatedState, Context, JsonValue } from "@earendil-works/chord";
 import { withAbortSignal, withoutAbortSignal } from "@earendil-works/chord/context";
-import { ResetEntry } from "../entries.ts";
+import { ResetEntry, SystemEntry } from "../entries.ts";
 import type { ExecutionEnv } from "../env/index.ts";
 import { SessionImpl } from "../session/session.ts";
 import type { Transaction } from "../session/transaction.ts";
@@ -38,6 +38,7 @@ import type {
 	Conversation,
 	ConversationAbortOptions,
 	ConversationCreateOptions,
+	ConversationExport,
 	ConversationHandle,
 	ConversationInit,
 	ConversationWatch,
@@ -124,6 +125,20 @@ class ConversationImpl<Tool extends ToolRegistration> implements Conversation {
 		return readContext(this.#host.harness, this.#host.storage, this.id, context);
 	}
 
+	async export(context: Context): Promise<ConversationExport> {
+		const view = await this.context(context);
+		return {
+			entries: view.entries
+				.filter((entry) => !SystemEntry.is(entry))
+				.map((entry) => ({
+					kind: entry.kind,
+					...(entry.model === undefined ? {} : { model: entry.model }),
+					...(entry.data === undefined ? {} : { data: entry.data }),
+					...(entry.id === view.head?.id ? { head: "self" as const } : {}),
+				})),
+		};
+	}
+
 	entries(
 		query: Omit<EntryQuery, "conversationId">,
 		limit: number,
@@ -144,7 +159,7 @@ class ConversationImpl<Tool extends ToolRegistration> implements Conversation {
 
 	abort(context: Context, options?: ConversationAbortOptions): Promise<void> {
 		this.#host.tasks.resume();
-		return this.#host.tasks.abortConversation(this.id, options?.background === true, context);
+		return this.#host.tasks.abortConversation(this.id, options ?? {}, context);
 	}
 
 	waitForIdle(context: Context): Promise<void> {
@@ -319,6 +334,18 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 		return this.#create({ kind: "independent", ownership: options.ownership }, options, context);
 	}
 
+	importConversation(
+		exported: ConversationExport,
+		options: ConversationCreateOptions,
+		context: Context,
+	): Promise<Conversation> {
+		const init = async (tx: Tx, id: ConversationId): Promise<void> => {
+			for (const entry of exported.entries) await tx.appendEntry(id, entry);
+			await options.init?.(tx, id);
+		};
+		return this.#create({ kind: "independent", ownership: options.ownership }, { ...options, init }, context);
+	}
+
 	override close(context: Context): Promise<void> {
 		this.#closed = true;
 		return super.close(context);
@@ -398,7 +425,7 @@ function boundConversation(
 		},
 		abort: async (context, options) => {
 			binding.check();
-			return tasks.abortConversation(id, options?.background === true, bind(context));
+			return tasks.abortConversation(id, options ?? {}, bind(context));
 		},
 		waitForIdle: bound((callContext) => tasks.waitForIdle(id, callContext)),
 	};
