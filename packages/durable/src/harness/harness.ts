@@ -1,6 +1,6 @@
 import type { AttachedReplicatedState, Context, JsonValue } from "@earendil-works/chord";
 import { withAbortSignal, withoutAbortSignal } from "@earendil-works/chord/context";
-import { ResetEntry } from "../entries.ts";
+import { ResetEntry, SystemEntry } from "../entries.ts";
 import type { ExecutionEnv } from "../env/index.ts";
 import { contained, SessionImpl } from "../session/session.ts";
 import type { Transaction } from "../session/transaction.ts";
@@ -38,6 +38,7 @@ import type {
 	Conversation,
 	ConversationAbortOptions,
 	ConversationCreateOptions,
+	ConversationExport,
 	ConversationHandle,
 	ConversationInit,
 	ConversationWatch,
@@ -144,6 +145,29 @@ class ConversationImpl<Tool extends ToolRegistration> implements Conversation {
 
 	fork(at: EntryId, options: ConversationCreateOptions, context: Context): Promise<Conversation> {
 		return this.#host.create({ kind: "fork", parentId: this.id, at, ownership: options.ownership }, options, context);
+	}
+
+	async export(context: Context): Promise<ConversationExport> {
+		const history: EntryRecord[] = [];
+		let cursor: Cursor | undefined;
+		do {
+			const page = await this.entries({}, 500, cursor, context);
+			history.push(...page.items);
+			cursor = page.next;
+		} while (cursor !== undefined);
+		const kept = history.filter((entry) => !SystemEntry.is(entry)).sort((a, b) => a.id - b.id);
+		// A head names the entry the context starts at, or the first exported one after it when that is a system entry.
+		const at = (id: EntryId) => kept.findIndex((entry) => entry.id >= id);
+		return {
+			entries: kept.map((entry) => ({
+				kind: entry.kind,
+				...(entry.model === undefined ? {} : { model: entry.model }),
+				...(entry.data === undefined ? {} : { data: entry.data }),
+				...(entry.head === undefined
+					? {}
+					: { head: entry.head === entry.id ? ("self" as const) : { entry: at(entry.head) } }),
+			})),
+		};
 	}
 
 	abort(context: Context, options?: ConversationAbortOptions): Promise<void> {
@@ -327,6 +351,22 @@ class HarnessImpl<Tool extends ToolRegistration> extends SessionImpl implements 
 
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation> {
 		return this.#create({ kind: "independent", ownership: options.ownership }, options, context);
+	}
+
+	importConversation(
+		exported: ConversationExport,
+		options: ConversationCreateOptions,
+		context: Context,
+	): Promise<Conversation> {
+		const init = async (tx: Tx, id: ConversationId): Promise<void> => {
+			const ids: EntryId[] = [];
+			for (const { head, ...entry } of exported.entries) {
+				const placed = head === undefined ? {} : { head: head === "self" ? ("self" as const) : ids[head.entry] };
+				ids.push((await tx.appendEntry(id, { ...entry, ...placed })).id);
+			}
+			await options.init?.(tx, id);
+		};
+		return this.#create({ kind: "independent", ownership: options.ownership }, { ...options, init }, context);
 	}
 
 	override report(error: unknown): void {

@@ -110,6 +110,16 @@ export type AnyTask = {
 	};
 };
 
+/** An exported entry: a head marker names the entry the active context starts at by its position in the export. */
+export type ExportedEntry = Omit<EntryDraft, "head"> & { readonly head?: "self" | { readonly entry: number } };
+
+/**
+ * A conversation's history as entries to append elsewhere, oldest first, so importing it leaves the same transcript and
+ * derives the same active context, compactions included. System entries and context edits are left out; the importing
+ * Harness derives its own prompt and tools.
+ */
+export type ConversationExport = { readonly entries: readonly ExportedEntry[] };
+
 /** Options of `Conversation.abort()`. */
 export type ConversationAbortOptions = {
 	/**
@@ -696,6 +706,8 @@ export interface Conversation {
 		context: Context,
 	): Promise<Page<EntryRecord, Cursor>>;
 	fork(at: EntryId, options: ConversationCreateOptions, context: Context): Promise<Conversation>;
+	/** The whole history, for `Harness.importConversation()`. */
+	export(context: Context): Promise<ConversationExport>;
 	/**
 	 * Withdraw queued inputs (queued writes stay), mark every live non-background task of the ordinary ownership scope,
 	 * signal them, and resolve once the scope is idle. Background subtrees survive unless `background` is set.
@@ -730,6 +742,12 @@ export interface Harness extends Session {
 	): Promise<Conversation>;
 	conversation(id: ConversationId, context: Context): Promise<Conversation | undefined>;
 	createConversation(options: ConversationCreateOptions, context: Context): Promise<Conversation>;
+	/** A new conversation holding an exported history, created with `options` in one commit. */
+	importConversation(
+		exported: ConversationExport,
+		options: ConversationCreateOptions,
+		context: Context,
+	): Promise<Conversation>;
 
 	getTask<R>(id: TaskId<R>, context: Context): Promise<TaskRecord<JsonValue, JsonValue, R> | undefined>;
 	/** Live tasks and unsettled submissions. Writes nothing and runs no task code. */

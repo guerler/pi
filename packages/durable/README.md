@@ -540,6 +540,8 @@ const fork = await root.fork(entryId, { ownership: { kind: "ownerless" } }, cont
 
 A fork sees its parent's entries up to `entryId` and continues independently. It keeps the parent's agent as of that entry but receives a fresh provider session identity. Both take `agent` and `init`, applied in the creating commit.
 
+`conversation.export()` returns the conversation's whole history as entry drafts, oldest first and without system entries, with a head marker naming the entry it starts at by position. `harness.importConversation(exported, options)` creates a conversation holding them that derives the same active context, so a host can store a conversation elsewhere and open it again under its own prompt and tools.
+
 ## Abort and Subagents
 
 `await root.abort(context)` stops a conversation: queued inputs are withdrawn (queued writes stay), every task of its current work is aborted, and the call resolves once the conversation is idle. With `{ keepQueued: true }` queued inputs stay in the inbox for the next input to place.

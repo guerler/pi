@@ -1267,3 +1267,23 @@ describe("run policy", () => {
 		await harness.close(context);
 	});
 });
+
+describe("conversation export", () => {
+	it("imports the active context without its system entries, under the importer's own prompt", async () => {
+		const setup = chatSetup();
+		setup.registry.install(defineExtension({ name: "preamble", sections: [section("preamble", () => "Hi.")] }));
+		const { harness, root } = await run(setup, [DONE]);
+		const exported = await root.export(context);
+		expect(exported.entries.map((entry) => entry.kind)).toEqual(["pi.user", "pi.assistant"]);
+		const { model } = await root.agent(context);
+		const ownerless = { kind: "ownerless" } as const;
+		const copy = await harness.importConversation(exported, { ownership: ownerless, agent: { model } }, context);
+		const view = await copy.context(context);
+		expect(view.messages.map((message) => message.role)).toEqual(["user", "assistant"]);
+		setup.faux.setResponses([fauxAssistantMessage([fauxText("again")])]);
+		await (await copy.submit({ type: "input", content: "more" }, context)).wait(context);
+		const roles = (await copy.context(context)).messages.map((message) => message.role);
+		expect(roles).toEqual(["system", "user", "assistant", "user", "assistant"]);
+		await harness.close(context);
+	});
+});
