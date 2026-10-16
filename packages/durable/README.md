@@ -328,6 +328,8 @@ const harness = await Harness.open(storage, {
 }, context);
 ```
 
+`maxTurns` bounds the model turns of one run: past it, the run ends after its tool round and its inputs settle `unanswered` with reason `turn_limit`.
+
 ## Environment
 
 `env` builds the execution environment for each tool call, section rendering, and `runtime.env()`. It receives the conversation's ID, its agent `cwd`, and committed reads, so one function serves a directory per conversation or a container per conversation:

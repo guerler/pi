@@ -9,6 +9,7 @@
 - `afterTool` hooks also see the result of a call that never executed (an unavailable tool, invalid arguments, or a `beforeTool` block), so an extension can redact, explain, or hint at every result the model reads.
 - `HookRunner.of(task)`: a task runs another task's hooks for work it does on that task's behalf; the generation applies the tool task's `afterTool` to calls its request did not offer.
 - `whenIdle: "queue"` input waits in the inbox on an idle conversation until the next input starts a run, and `Conversation.abort(context, { keepQueued: true })` leaves queued inputs for the next input to place, so a host can hold work back across a Stop.
+- `HarnessSettings.maxTurns` ends a run after that many model turns; its inputs settle `unanswered` with `turn_limit`.
 
 ### Changed
 

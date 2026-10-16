@@ -549,6 +549,8 @@ export type HarnessSettings = {
 	readonly compaction?: CompactionSettings;
 	readonly progress?: Partial<ProgressPolicy>;
 	readonly toolExecution?: ToolExecutionMode;
+	/** The most model turns one run takes; past them its inputs settle `unanswered` with `turn_limit`. */
+	readonly maxTurns?: number;
 	readonly steeringMode?: QueueMode;
 	readonly followUpMode?: QueueMode;
 	/**
@@ -574,6 +576,7 @@ export type Settings = {
 	readonly compaction: CompactionPolicy & Pick<CompactionSettings, "modelOverrides">;
 	readonly progress: ProgressPolicy;
 	readonly toolExecution: ToolExecutionMode;
+	readonly maxTurns?: number;
 	readonly steeringMode: QueueMode;
 	readonly followUpMode: QueueMode;
 	readonly contextRetentionMs: number;

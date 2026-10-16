@@ -48,7 +48,8 @@ import type {
 } from "./types.ts";
 import { recordUsage } from "./usage.ts";
 
-export type GenerationInput = Record<string, never>;
+/** `turns`: the model turns the run took before this generation. */
+export type GenerationInput = { turns?: number };
 
 export type GenerationCheckpoint =
 	| {
@@ -108,6 +109,8 @@ type Request = {
 	readonly messages?: readonly Message[];
 	/** Set when the message came from polling, so a still deferred result polls strictly later. */
 	readonly pollAt?: number;
+	/** The model turns the run took before this one. */
+	readonly turns: number;
 };
 
 const DEFAULT_POLL_AFTER_MS = 5000;
@@ -218,7 +221,14 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 				...(thinkingLevel === "off" ? {} : { reasoning: thinkingLevel }),
 			};
 			const message = await streamResponse(runtime, model, messages, options, attempt, context);
-			const request = { attempt, compacted, model: ref, cutoff, messages: view.messages };
+			const request = {
+				attempt,
+				compacted,
+				model: ref,
+				cutoff,
+				messages: view.messages,
+				turns: task.input.turns ?? 0,
+			};
 			await classify(runtime, request, message, context);
 		},
 		retry: async (task, runtime, context) => {
@@ -240,13 +250,13 @@ export const GenerationTask = defineTask<GenerationInput, GenerationCheckpoint, 
 			if (model === undefined) return failNoModel(runtime, ref, context);
 			await runtime.sleep(pollAt, context);
 			const message = await runtime.models.fetchDeferred(model, handle, { signal: runtime.signal });
-			const request = { attempt, compacted, model: ref, cutoff, pollAt };
+			const request = { attempt, compacted, model: ref, cutoff, pollAt, turns: task.input.turns ?? 0 };
 			await classify(runtime, request, message, context);
 		},
 		tools: async (task, runtime, context) => {
 			const { assistant, tools, pending } = task.state.checkpoint;
 			const [next, ...rest] = pending;
-			if (next === undefined) return finishToolRound(runtime, assistant, tools, context);
+			if (next === undefined) return finishToolRound(runtime, assistant, tools, task.input.turns ?? 0, context);
 			// Sequential round: start the next call and wait for it.
 			await runtime.commit(async (tx): Promise<Next> => {
 				const live = await tx.doc(LiveDoc, runtime.conversationId);
@@ -483,7 +493,7 @@ async function classify(
 		return startToolRound(runtime, request, message, calls, context);
 	}
 	if (message.stopReason === "stop" || message.stopReason === "length" || message.stopReason === "toolUse") {
-		return answer(runtime, message, context);
+		return answer(runtime, message, request.turns, context);
 	}
 	// The retry and compaction policies govern the next attempt, so they are read now rather than pinned at preparation.
 	const settings = runtime.settings;
@@ -540,7 +550,7 @@ async function classify(
  * message and hands the run to a successor generation, but only when the boundary selected no user item and no reset.
  * Otherwise the run's inputs settle `done`, and selected user items start the next run.
  */
-async function answer(runtime: Runtime, message: AssistantMessage, context: Context): Promise<void> {
+async function answer(runtime: Runtime, message: AssistantMessage, before: number, context: Context): Promise<void> {
 	let continuation: UserInput | undefined;
 	await runtime.hooks.each("onYield", async (hook) => {
 		if (continuation !== undefined) return;
@@ -554,10 +564,12 @@ async function answer(runtime: Runtime, message: AssistantMessage, context: Cont
 		const entry = await appendAssistant(tx, conversationId, message);
 		const result: Next = { status: "terminal", outcome: { status: "completed", result: { entryId: entry.id } } };
 		const { users, reset } = await applyBoundary(tx, boundary, "final", runtime.now());
-		if (continuation !== undefined && users.length === 0 && !reset) {
+		const turns = before + 1;
+		const limit = runtime.settings.maxTurns;
+		if (continuation !== undefined && users.length === 0 && !reset && (limit === undefined || turns < limit)) {
 			const user = { role: "user", content: continuation, timestamp: runtime.now() } as const;
 			await tx.appendEntry(UserEntry, conversationId, { model: [user] });
-			handOver(live, runtime.taskId, await createGeneration(tx, conversationId));
+			handOver(live, runtime.taskId, await createGeneration(tx, conversationId, turns));
 			delete live.generation;
 			return result;
 		}
@@ -634,6 +646,7 @@ async function finishToolRound(
 	runtime: Runtime,
 	assistant: EntryId,
 	tools: readonly TaskId<ToolTaskResult>[],
+	before: number,
 	context: Context,
 ): Promise<void> {
 	const conversationId = runtime.conversationId;
@@ -672,6 +685,14 @@ async function finishToolRound(
 			endRun(tx, live, runtime.taskId, { status: "done", answer: assistant });
 			if (users.length > 0) await startRun(tx, conversationId, live, users);
 		} else {
+			const turns = before + 1;
+			const limit = runtime.settings.maxTurns;
+			if (limit !== undefined && turns >= limit) {
+				const { users } = await applyBoundary(tx, boundary, "final", now);
+				endRun(tx, live, runtime.taskId, { status: "unanswered", reason: "turn_limit" });
+				if (users.length > 0) await startRun(tx, conversationId, live, users);
+				return { status: "terminal", outcome: { status: "completed", result: { entryId: assistant } } };
+			}
 			const { users, reset } = await applyBoundary(tx, boundary, "postTools", now);
 			if (reset) {
 				// The queued reset cut the run's context before an answer.
@@ -681,7 +702,7 @@ async function finishToolRound(
 				delete live.tools;
 				delete live.nestedTools;
 				if (live.run?.taskId === runtime.taskId) live.run.inputs.push(...users);
-				handOver(live, runtime.taskId, await createGeneration(tx, conversationId));
+				handOver(live, runtime.taskId, await createGeneration(tx, conversationId, turns));
 			}
 		}
 		return { status: "terminal", outcome: { status: "completed", result: { entryId: assistant } } };
@@ -712,8 +733,9 @@ export async function startRun(
 }
 
 /** A generation owned by its conversation. */
-function createGeneration(tx: Tx, conversationId: ConversationId): Promise<TaskId<GenerationResult>> {
-	return tx.createTask(GenerationTask, {}, { ownership: { kind: "conversation" }, conversationId });
+function createGeneration(tx: Tx, conversationId: ConversationId, turns = 0): Promise<TaskId<GenerationResult>> {
+	const input = turns === 0 ? {} : { turns };
+	return tx.createTask(GenerationTask, input, { ownership: { kind: "conversation" }, conversationId });
 }
 
 /** Hand run control from `from` to `to`; the run's inputs move with it. */

@@ -1245,3 +1245,25 @@ describe("tool progress and lifetime", () => {
 		await harness.close(context);
 	});
 });
+
+describe("run policy", () => {
+	it("ends a run past maxTurns with turn_limit, after the round that reached it", async () => {
+		const setup = chatSetup();
+		setup.settings.maxTurns = 2;
+		addTool(
+			setup.registry,
+			tool("echo", async () => ({ output: [{ type: "text", text: "ok" }] })),
+		);
+		const { harness, entries, status } = await run(setup, [
+			calls(["echo", {}, "c1"]),
+			calls(["echo", {}, "c2"]),
+			calls(["echo", {}, "c3"]),
+			DONE,
+		]);
+		expect(status).toBe("unanswered");
+		expect(results(entries).map((result) => result.toolCallId)).toEqual(["c1", "c2"]);
+		const settled = await harness.commit((tx) => tx.scanTasks({ kind: "pi.generation" }, 20), context);
+		expect(settled.items).toHaveLength(2);
+		await harness.close(context);
+	});
+});

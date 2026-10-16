@@ -67,6 +67,7 @@ export function resolveSettings(settings: HarnessSettings | undefined): Settings
 			outputIntervalMs: settings?.progress?.outputIntervalMs ?? DEFAULT_PROGRESS_POLICY.outputIntervalMs,
 		},
 		toolExecution: settings?.toolExecution ?? "parallel",
+		...(settings?.maxTurns === undefined ? {} : { maxTurns: settings.maxTurns }),
 		steeringMode: settings?.steeringMode ?? "one-at-a-time",
 		followUpMode: settings?.followUpMode ?? "one-at-a-time",
 		contextRetentionMs: settings?.contextRetentionMs ?? DEFAULT_CONTEXT_RETENTION_MS,
