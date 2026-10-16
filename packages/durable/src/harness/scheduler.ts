@@ -28,6 +28,7 @@ import { type ContextRange, readContextFrom } from "./context.ts";
 import type {
 	Agent,
 	AnyTask,
+	ConversationAbortOptions,
 	ConversationHandle,
 	HarnessInspection,
 	RegistryReader,
@@ -389,11 +390,16 @@ export class TaskScheduler {
 	}
 
 	/**
-	 * `Conversation.abort()`: in one commit, withdraw the queued inputs and mark every live non-background task that
-	 * ordinary traversal from the conversation reaches; resolves once the scope is idle. With `background`, traversal
-	 * crosses background boundaries, and the wait also covers every task it reached.
+	 * `Conversation.abort()`: in one commit, withdraw the queued inputs (unless `keepQueued`) and mark every live
+	 * non-background task that ordinary traversal from the conversation reaches; resolves once the scope is idle. With
+	 * `background`, traversal crosses background boundaries, and the wait also covers every task it reached.
 	 */
-	async abortConversation(conversationId: ConversationId, background: boolean, context: Context): Promise<void> {
+	async abortConversation(
+		conversationId: ConversationId,
+		options: ConversationAbortOptions,
+		context: Context,
+	): Promise<void> {
+		const background = options.background === true;
 		const reached = await this.#session.commitWith(async (tx) => {
 			const queued = await this.#loadScopes(true);
 			const scope = { conversation: conversationId };
@@ -404,7 +410,7 @@ export class TaskScheduler {
 				reached.push(live.id);
 				if (!live.abortRequested || live.abortReason !== undefined) tx.setTask(withAbortMark(live));
 			}
-			for (const id of queued) {
+			for (const id of options.keepQueued ? [] : queued) {
 				if (this.#inScope({ conversation: id }, scope, background) === true) await this.#withdrawInputs(tx, id);
 			}
 			return reached;

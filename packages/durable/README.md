@@ -419,6 +419,7 @@ await root.submit({ type: "write", entry: { kind: "app.note", data: "user opened
 - **Steers** are placed after the current tool round and join the running work.
 - **Follow-ups** are placed when the run answers, and start the next run.
 - **Writes** append an entry without asking the model anything. A write of only `kind` and `data` changes nothing the model sees, so it is appended at once, even mid-run, and is never queued: a chat message shows in the transcript as soon as it is sent. It can therefore appear before items submitted earlier that are still queued, except behind a queued reset, where it waits so the reset does not hide it. A write with `model`, `head`, or `edits` waits for the next boundary like a steer.
+- `whenIdle: "queue"` queues input even on an idle conversation; it waits for the run the next input starts.
 - `await submission.abort(context)` withdraws a queued submission.
 - The [settings](#settings) `steeringMode: "all"` and `followUpMode: "all"` place every queued item at once instead of one per turn.
 
@@ -539,7 +540,7 @@ A fork sees its parent's entries up to `entryId` and continues independently. It
 
 ## Abort and Subagents
 
-`await root.abort(context)` stops a conversation: queued inputs are withdrawn (queued writes stay), every task of its current work is aborted, and the call resolves once the conversation is idle.
+`await root.abort(context)` stops a conversation: queued inputs are withdrawn (queued writes stay), every task of its current work is aborted, and the call resolves once the conversation is idle. With `{ keepQueued: true }` queued inputs stay in the inbox for the next input to place.
 
 A conversation can be **owned** by a task. A subagent tool creates its child inside `api.commit()` with `ownership: { kind: "task", taskId: api.taskId }`, then drives it through `api.conversation(id)`:
 

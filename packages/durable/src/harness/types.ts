@@ -65,6 +65,8 @@ export type SubmissionDraft = {
 			readonly type: "input";
 			readonly content: UserInput;
 			readonly whenBusy?: "steer" | "followUp" | "reject";
+			/** `queue`: an idle conversation queues it too, so it waits for the run the next input starts. */
+			readonly whenIdle?: "start" | "queue";
 			/** Place the input as this entry; default `pi.user` without data. The kind must not start with `pi.`. */
 			readonly entry?: InputEntry;
 	  }
@@ -73,6 +75,7 @@ export type SubmissionDraft = {
 			readonly entry: EntryDraft;
 			readonly content?: never;
 			readonly whenBusy?: never;
+			readonly whenIdle?: never;
 	  }
 );
 
@@ -115,6 +118,8 @@ export type ConversationAbortOptions = {
 	 * conversation is ordinarily idle. Background work created afterwards is neither marked nor awaited.
 	 */
 	readonly background?: boolean;
+	/** Leave queued inputs in the inbox, where the next input places them, instead of withdrawing them. */
+	readonly keepQueued?: boolean;
 };
 
 /** Hook handler map declared by a task definition. */

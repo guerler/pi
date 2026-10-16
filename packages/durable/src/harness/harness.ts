@@ -148,7 +148,7 @@ class ConversationImpl<Tool extends ToolRegistration> implements Conversation {
 
 	abort(context: Context, options?: ConversationAbortOptions): Promise<void> {
 		this.#host.tasks.resume();
-		return this.#host.tasks.abortConversation(this.id, options?.background === true, context);
+		return this.#host.tasks.abortConversation(this.id, options ?? {}, context);
 	}
 
 	waitForIdle(context: Context): Promise<void> {
@@ -433,7 +433,7 @@ function boundConversation(
 		},
 		abort: async (context, options) => {
 			binding.check();
-			return tasks.abortConversation(id, options?.background === true, bind(context));
+			return tasks.abortConversation(id, options ?? {}, bind(context));
 		},
 		waitForIdle: bound((callContext) => tasks.waitForIdle(id, callContext)),
 	};
