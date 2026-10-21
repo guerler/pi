@@ -53,6 +53,11 @@ export const AgentDoc = defineDoc<AgentState>({
 /** Default `settings.contextRetentionMs`: ten minutes. */
 const DEFAULT_CONTEXT_RETENTION_MS = 600_000;
 
+/** A turn limit as given when it is a number of turns, `1` or more, rounded down; else none (`Infinity`). */
+function turnLimit(limit: number | undefined): number {
+	return typeof limit === "number" && limit >= 1 ? Math.floor(limit) : Number.POSITIVE_INFINITY;
+}
+
 /** Resolve the host settings: every field over its built-in default, object fields merged. */
 export function resolveSettings(settings: HarnessSettings | undefined): Settings {
 	const extensions = settings?.extensions;
@@ -71,6 +76,7 @@ export function resolveSettings(settings: HarnessSettings | undefined): Settings
 		followUpMode: settings?.followUpMode ?? "one-at-a-time",
 		contextRetentionMs: settings?.contextRetentionMs ?? DEFAULT_CONTEXT_RETENTION_MS,
 		documentRetentionMs: documentRetention(settings?.documentRetentionMs),
+		maxTurns: turnLimit(settings?.maxTurns),
 	};
 }
 

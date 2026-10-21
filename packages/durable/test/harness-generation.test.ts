@@ -495,7 +495,12 @@ describe("generation", () => {
 			followUpMode: "one-at-a-time",
 			contextRetentionMs: 600_000,
 			documentRetentionMs: expect.any(Number),
+			maxTurns: Number.POSITIVE_INFINITY,
 		});
+		expect(resolveSettings({ maxTurns: 2.5 }).maxTurns).toBe(2);
+		for (const maxTurns of [0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, "3" as unknown as number]) {
+			expect(resolveSettings({ maxTurns }).maxTurns).toBe(Number.POSITIVE_INFINITY);
+		}
 		expect(resolveSettings({ retry: { enabled: false }, compaction: { backgroundTokens: 0 } })).toMatchObject({
 			retry: { enabled: false, maxRetries: 3, baseDelayMs: 2000 },
 			compaction: { enabled: true, backgroundTokens: 0 },

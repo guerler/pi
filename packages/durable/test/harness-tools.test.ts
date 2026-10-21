@@ -25,6 +25,7 @@ import {
 	hook,
 	LiveDoc,
 	MemoryStorage,
+	type Submission,
 	type SubmissionId,
 	section,
 	type ToolRegistration,
@@ -1339,6 +1340,114 @@ describe("tool progress and lifetime", () => {
 		expect(resultText(results(await allEntries(root))[0]!)).toBe(
 			"durable\n|<harness>\n[error] Tool slow was aborted\n</harness>",
 		);
+		await harness.close(context);
+	});
+});
+
+describe("run policy", () => {
+	it("ends a run past maxTurns with turn_limit, after the round that reached it", async () => {
+		const setup = chatSetup();
+		setup.settings.maxTurns = 2;
+		addTool(
+			setup.registry,
+			tool("echo", async () => ({ output: [{ type: "text", text: "ok" }] })),
+		);
+		const { harness, entries, status } = await run(setup, [
+			calls(["echo", {}, "c1"]),
+			calls(["echo", {}, "c2"]),
+			calls(["echo", {}, "c3"]),
+			DONE,
+		]);
+		expect(status).toBe("unanswered");
+		expect(results(entries).map((result) => result.toolCallId)).toEqual(["c1", "c2"]);
+		const settled = await harness.commit((tx) => tx.scanTasks({ kind: "pi.generation" }, 20), context);
+		expect(settled.items).toHaveLength(2);
+		await harness.close(context);
+	});
+
+	it("drops an onYield continuation once the run reaches maxTurns and answers with that turn", async () => {
+		const setup = chatSetup();
+		setup.settings.maxTurns = 2;
+		addHooks(setup.registry, GenerationTask, { onYield: () => ({ continue: "again" }) });
+		const { harness, entries, status } = await run(setup, [
+			fauxAssistantMessage([fauxText("first")]),
+			fauxAssistantMessage([fauxText("second")]),
+			fauxAssistantMessage([fauxText("third")]),
+		]);
+		expect(status).toBe("done");
+		expect(entries.filter((entry) => entry.kind === "pi.assistant").map((entry) => textOf(entry.model?.[0]))).toEqual(
+			["first", "second"],
+		);
+		await harness.close(context);
+	});
+
+	it("starts a run for input queued during the round that reached maxTurns, with a turn budget of its own", async () => {
+		const setup = chatSetup();
+		setup.settings.maxTurns = 2;
+		let root!: Conversation;
+		let next: Submission | undefined;
+		addTool(
+			setup.registry,
+			tool("echo", async () => {
+				next ??= await root.submit({ type: "input", content: "next", whenBusy: "followUp" }, context);
+				return { output: [{ type: "text", text: "ok" }] };
+			}),
+		);
+		const { harness, status } = await run(
+			setup,
+			[calls(["echo", {}, "c1"]), calls(["echo", {}, "c2"]), calls(["echo", {}, "c3"]), DONE],
+			async (_harness, opened) => {
+				root = opened;
+			},
+		);
+		expect(status).toBe("unanswered");
+		// The follow-up's run takes its own two turns: a tool round and the answer.
+		expect(await next!.wait(context)).toMatchObject({ status: "done" });
+		expect(setup.faux.state.callCount).toBe(4);
+		await harness.close(context);
+	});
+
+	it("keeps counting the run's turns when a steer joins it", async () => {
+		const setup = chatSetup();
+		setup.settings.maxTurns = 2;
+		let root!: Conversation;
+		let steer: Submission | undefined;
+		addTool(
+			setup.registry,
+			tool("echo", async () => {
+				steer ??= await root.submit({ type: "input", content: "steer", whenBusy: "steer" }, context);
+				return { output: [{ type: "text", text: "ok" }] };
+			}),
+		);
+		const { harness, status } = await run(
+			setup,
+			[calls(["echo", {}, "c1"]), calls(["echo", {}, "c2"]), DONE],
+			async (_harness, opened) => {
+				root = opened;
+			},
+		);
+		expect(status).toBe("unanswered");
+		expect(await steer!.wait(context)).toMatchObject({ status: "unanswered", reason: "turn_limit" });
+		expect(setup.faux.state.callCount).toBe(2);
+		await harness.close(context);
+	});
+
+	it("counts the turns of tool rounds and continuations together", async () => {
+		const setup = chatSetup();
+		setup.settings.maxTurns = 3;
+		addTool(
+			setup.registry,
+			tool("echo", async () => ({ output: [{ type: "text", text: "ok" }] })),
+		);
+		addHooks(setup.registry, GenerationTask, { onYield: () => ({ continue: "again" }) });
+		const { harness, entries, status } = await run(setup, [
+			calls(["echo", {}, "c1"]),
+			fauxAssistantMessage([fauxText("yielded")]),
+			calls(["echo", {}, "c2"]),
+			DONE,
+		]);
+		expect(status).toBe("unanswered");
+		expect(results(entries).map((result) => result.toolCallId)).toEqual(["c1", "c2"]);
 		await harness.close(context);
 	});
 });

@@ -321,6 +321,7 @@ const harness = await Harness.open(storage, {
 		toolExecution: "parallel",
 		contextRetentionMs: 600_000, // idle conversations keep their context in memory this long (checked lazily where timers cannot be unreferenced)
 		documentRetentionMs: 600_000, // loaded documents nothing observes stay in memory this long after their last use; observed ones always
+		maxTurns: 50, // model turns one run takes at most
 		get followUpMode() {
 			return userSettings.followUpMode;
 		},
@@ -423,6 +424,8 @@ await root.submit({ type: "write", entry: { kind: "app.note", data: "user opened
 - The [settings](#settings) `steeringMode: "all"` and `followUpMode: "all"` place every queued item at once instead of one per turn.
 
 If a run fails, queued items stay in the inbox until the next input or queued write places them, oldest first.
+
+A run takes at most `settings.maxTurns` model turns. If its last turn calls tools, the run ends after that round with its inputs `unanswered` (reason `turn_limit`), and queued follow-ups start the next run; if it answers, an `onYield` continuation is dropped.
 
 An input is placed as a `pi.user` entry. To show it as something else, give it an `entry` with your kind and data; the model still sees `content` as the user message:
 
