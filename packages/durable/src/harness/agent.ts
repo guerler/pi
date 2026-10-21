@@ -61,6 +61,11 @@ function restartLimit(limit: number | undefined): number {
 	return typeof limit === "number" && limit >= 1 ? Math.floor(limit) : DEFAULT_RESTART_LIMIT;
 }
 
+/** A turn limit as given when it is a number of turns, `1` or more, rounded down; else none (`Infinity`). */
+function turnLimit(limit: number | undefined): number {
+	return typeof limit === "number" && limit >= 1 ? Math.floor(limit) : Number.POSITIVE_INFINITY;
+}
+
 /** Resolve the host settings: every field over its built-in default, object fields merged. */
 export function resolveSettings(settings: HarnessSettings | undefined): Settings {
 	const extensions = settings?.extensions;
@@ -81,6 +86,7 @@ export function resolveSettings(settings: HarnessSettings | undefined): Settings
 		documentRetentionMs: documentRetention(settings?.documentRetentionMs),
 		afterFailedRun: settings?.afterFailedRun ?? "keep",
 		restartLimit: restartLimit(settings?.restartLimit),
+		maxTurns: turnLimit(settings?.maxTurns),
 	};
 }
 

@@ -575,6 +575,12 @@ export type HarnessSettings = {
 	 * runs it again. Default 5; `Infinity` never parks.
 	 */
 	readonly restartLimit?: number;
+	/**
+	 * The most model turns one run takes. When the last one calls tools, the run ends after that round and its inputs
+	 * settle `unanswered` with `turn_limit`; when it answers, an `onYield` continuation is dropped. A number `1` or more,
+	 * rounded down; anything else sets no limit.
+	 */
+	readonly maxTurns?: number;
 };
 
 /** What a failed run does with the inputs queued behind it (`HarnessSettings.afterFailedRun`). */
@@ -596,6 +602,7 @@ export type Settings = {
 	readonly documentRetentionMs: number;
 	readonly afterFailedRun: AfterFailedRun;
 	readonly restartLimit: number;
+	readonly maxTurns: number;
 };
 
 /** What `HarnessOptions.env` builds an environment for. */
@@ -858,7 +865,7 @@ export interface GenerationHooks {
 	): HookResult<{ readonly messages: readonly Message[] }>;
 	/** Every terminal provider message, before classification. */
 	afterResponse(message: AssistantMessage, api: HookApi, context: Context): void | Promise<void>;
-	/** A final answer; the first `continue` appends a user message and continues the run. */
+	/** A final answer; the first `continue` appends a user message and continues the run, unless it reached `maxTurns`. */
 	onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<{ readonly continue: UserInput }>;
 	/** After every tool of the round is terminal; `results` are the round's result entries in call order. */
 	afterTools(assistant: EntryId, results: readonly EntryId[], api: HookApi, context: Context): void | Promise<void>;

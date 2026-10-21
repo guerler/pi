@@ -462,6 +462,8 @@ type HarnessSettings = {
   readonly afterFailedRun?: "keep" | "continue" | "withdraw";
   /** Restarts in a row without progress after which a task is parked (section 5.4); `Infinity` never parks. */
   readonly restartLimit?: number;
+  /** Model turns one run takes at most (sections 8.3, 8.5); `1` or more, rounded down; anything else sets no limit. */
+  readonly maxTurns?: number;
 };
 
 /** Resolved: every field over its built-in default, object fields merged. */
@@ -477,6 +479,7 @@ type Settings = {
   readonly documentRetentionMs: number; // 600000
   readonly afterFailedRun: "keep" | "continue" | "withdraw"; // "keep"
   readonly restartLimit: number; // 5
+  readonly maxTurns: number; // Infinity
 };
 
 /** Stored choices of one conversation; names, not objects. Unset fields follow the host. */
@@ -2547,6 +2550,7 @@ Admission and terminal transitions:
 | boundary places user item | `placed`, with entry | add ID to current or successor run |
 | boundary places write | `done`, with entry | append entry |
 | run answers | input `done`, with required answer entry | remove `run`, or hand it to a successor |
+| run reaches `maxTurns` in a tool round | input `unanswered`, reason `turn_limit` | remove `run`; final boundary |
 | run fails or its task aborts | input `unanswered`, with reason | remove `run`; inbox per `afterFailedRun` below |
 | withdraw queued item | `unanswered`, reason `aborted` | remove inbox item |
 | stale head write | `unanswered`, reason `stale` | remove inbox item |
@@ -2617,8 +2621,8 @@ A reset placed at a `final` boundary follows the answer, so the inputs are
 already `done`.
 
 At ordinary `postTools`, generation continues even with no queued trigger;
-selected steer IDs join that continuation. A terminating or handoff tool round
-(section 8.5) uses final behavior instead. At `final`, the current run's placed
+selected steer IDs join that continuation. A terminating or handoff tool round,
+or one that reaches `maxTurns` (section 8.5), uses final behavior instead. At `final`, the current run's placed
 input submissions settle first, unless an `onYield` continuation keeps them open
 (below); selected user IDs start one successor generation with those IDs as the
 new run's inputs. Writes never trigger generation by
@@ -2626,8 +2630,10 @@ themselves. A final boundary without user triggers leaves the conversation idle,
 except for an `onYield` continuation (section 8.3), which applies only when the
 boundary selected no user item and no reset.
 
-Only successful run ends apply the final boundary: an answer, `terminate`, or
-`handoff`. Failure, a run task's abort handler, fault, and orphan settle the
+Only successful run ends apply the final boundary: an answer, `terminate`,
+`handoff`, or a tool round that reaches `maxTurns`, whose inputs settle
+`unanswered` with `turn_limit` and to which `afterFailedRun` does not apply.
+Failure, a run task's abort handler, fault, and orphan settle the
 run's inputs `unanswered` and leave the inbox alone (`Conversation.abort()`
 separately withdraws queued user items); the queued items stay visible in
 `pi.inbox` until the next input or queued write runs a boundary, or their withdrawal.
@@ -2945,7 +2951,7 @@ interface GenerationHooks {
   ): HookResult<{ readonly messages: readonly Message[] }>;
   /** Every terminal provider message, before classification. */
   afterResponse(message: AssistantMessage, api: HookApi, context: Context): void | Promise<void>;
-  /** A final answer; `continue` appends a user message and continues the run. */
+  /** A final answer; `continue` appends a user message and continues the run, unless the run reached `maxTurns`. */
   onYield(answer: AssistantMessage, api: HookApi, context: Context): HookResult<{ readonly continue: UserInput }>;
   /** After every tool of the round is terminal; `results` are the round's result entries in call order. */
   afterTools(assistant: EntryId, results: readonly EntryId[], api: HookApi, context: Context): void | Promise<void>;
@@ -4142,7 +4148,8 @@ so it is not a caller table read and works after the commit's first table write.
 ### 8.3 Generation
 
 ```ts
-type GenerationInput = {};
+/** `turns`: the model turns the run took before this generation; absent is 0. */
+type GenerationInput = { turns?: number };
 type GenerationCheckpoint =
   | {
       phase: "prepare";
@@ -4247,9 +4254,10 @@ The run's inputs live in `pi.live.run`, not in the task input.
   terminal message is classified in one commit that also clears the partial:
   - `stop`/`length`: before the commit, the `onYield` chain runs; the first
     `{ continue }` wins. The commit appends the answer and applies the final
-    boundary (section 6). With a continuation and no selected user item or
-    reset, it appends a `pi.user` entry with the continuation content, creates a
-    successor generation, and hands it `pi.live.run`, keeping the inputs open.
+    boundary (section 6). With a continuation, no selected user item or reset,
+    and fewer turns than `settings.maxTurns` counting this one, it appends a `pi.user` entry with the continuation content, creates a
+    successor generation with the turns so far, and hands it `pi.live.run`,
+    keeping the inputs open.
     Otherwise it settles the run's inputs `done`, removes `run` and
     `generation`, and starts a successor run for the selected user items, if
     any; a dropped continuation is not retried. Both complete with
@@ -4310,7 +4318,7 @@ A tool round starts in the commit that appends the tool-calling answer:
 
 Input submissions settle `unanswered` with one of these reasons: `no_model`,
 `model_error` (detail: provider error text), `aborted`, `faulted` (detail: error
-message), or an orphaning blocked reason (section 5.4). Fault and orphan
+message), `turn_limit` (section 8.5), or an orphaning blocked reason (section 5.4). Fault and orphan
 settlement convert a committed partial into an aborted `pi.assistant` entry,
 like the abort handler.
 
@@ -4398,11 +4406,15 @@ and then commits once:
   `handoff`, it appends the handoff's `pi.reset` entry, if any, settles the
   run's inputs `done` with the tool-calling answer, removes `run` and `tools`,
   and applies the final boundary.
+- Otherwise, when the round's answer reaches `settings.maxTurns` (the
+  generation's `turns` plus one), it applies the final boundary, settles the
+  run's inputs `unanswered` with `turn_limit`, removes `run` and `tools`, and
+  starts a successor run for the selected user items, if any.
 - Otherwise it removes `tools` and applies the `postTools` boundary. When that
   boundary placed a reset, the run's inputs settle `unanswered` with `reset` and
   selected user items start a successor run (section 6). Otherwise selected
   steer IDs join `pi.live.run`, and it creates the next generation, owned by the
-  conversation, and hands it the run.
+  conversation, with the turns so far, and hands it the run.
 
 It completes with `{ entryId }` of the tool-calling answer. Its abort handler
 runs only after its tool tasks are terminal (section 5.5). For every call still
